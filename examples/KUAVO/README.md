@@ -1,0 +1,1 @@
+``` bash examples/KUAVO/start_finetune.sh```ft_config

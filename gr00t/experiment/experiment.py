@@ -111,6 +111,7 @@ def run(config: Config):
         torch.cuda.set_device(local_rank)
         global_rank = dist.get_rank()
     else:
+        dist.init_process_group(backend="nccl")
         local_rank = 0
         global_rank = 0
 

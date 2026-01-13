@@ -35,7 +35,7 @@ class FinetuneConfig:
     tune_llm: bool = False
     """If True, fine-tune the language model (LLM) backbone during training."""
 
-    tune_visual: bool = False
+    tune_visual: bool = True
     """If True, fine-tune the visual encoder (e.g., ViT or CNN backbone)."""
 
     tune_projector: bool = True
