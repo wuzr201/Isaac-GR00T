@@ -1,0 +1,15 @@
+#This is the single project pyproject.toml
+
+[build-system]
+requires = ["setuptools>=67", "wheel", "pip"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "cvt"
+version = "0.1.0"
+requires-python = "==3.10.*"
+dependencies = [
+    "lerobot==0.3.3",
+    "gnupg==2.3.1",
+    "pycryptodomex==3.23.0",
+]
