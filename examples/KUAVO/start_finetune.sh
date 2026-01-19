@@ -3,7 +3,7 @@ set -x -e
 export NUM_GPUS=4
 export CUDA_VISIBLE_DEVICES=0,1,2,3
 
-DATASET_DIR="/home/wuzr/lab/codebase/Isaac-GR00T/demo_data/lerobot_v20/4322"
+DATASET_DIR="/home/wuzr/lab/codebase/Isaac-GR00T/demo_data/lerobot_v20/mix"
 
 DATASET_NAMES=(
   "mm_pick_4322_green_64"
@@ -15,6 +15,24 @@ DATASET_NAMES=(
   "mm_unpack_right_4322_green_64"
   "mm_unpack_right_4322_green_86"
   "mm_unpack_right_4322_green_106"
+  "mm_pick_4611_green_64"
+  "mm_pick_4611_green_86"
+  "mm_pick_4611_green_106"
+  "mm_unpack_left_4611_green_64"
+  "mm_unpack_left_4611_green_86"
+  "mm_unpack_left_4611_green_106"
+  "mm_unpack_right_4611_green_64"
+  "mm_unpack_right_4611_green_86"
+  "mm_unpack_right_4611_green_106"
+  "mm_pick_4633_green_64"
+  "mm_pick_4633_green_86"
+  "mm_pick_4633_green_106"
+  "mm_unpack_left_4633_green_64"
+  "mm_unpack_left_4633_green_86"
+  "mm_unpack_left_4633_green_106"
+  "mm_unpack_right_4633_green_64"
+  "mm_unpack_right_4633_green_86"
+  "mm_unpack_right_4633_green_106"
 )
 
 DATASET_PATHS=""
@@ -36,10 +54,10 @@ uv run torchrun --nproc_per_node=$NUM_GPUS \
     --modality_config_path /home/wuzr/lab/codebase/Isaac-GR00T/demo_data/lerobot_v20/modality_config.py \
     --embodiment_tag NEW_EMBODIMENT \
     --num_gpus $NUM_GPUS \
-    --output_dir ./outputs/kuavo_biped_finetune_joint_relative \
+    --output_dir ./outputs/kuavo_biped_joint_relative_multi_head \
     --save_steps 5000 \
-    --save_total_limit 2 \
-    --max_steps 20000 \
+    --save_total_limit 4 \
+    --max_steps 30000 \
     --warmup_ratio 0.05 \
     --weight_decay 1e-5 \
     --learning_rate 1e-4 \
