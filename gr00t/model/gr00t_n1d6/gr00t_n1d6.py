@@ -7,6 +7,7 @@ from gr00t.model.modules.embodiment_conditioned_mlp import (
     CategorySpecificMLP,
     MultiEmbodimentActionEncoder,
 )
+from diffusers.models.attention import Attention
 import torch
 from torch import nn
 from torch.distributions import Beta
@@ -14,6 +15,109 @@ import torch.nn.functional as F
 from transformers import AutoConfig, AutoModel, PreTrainedModel
 from transformers.feature_extraction_utils import BatchFeature
 import tree
+from typing import Optional
+
+
+class CrossAttentionBetweenHeads(nn.Module):
+    """
+    Cross-attention module that allows different action heads to attend to each other.
+    This enables coordination between different action parts (e.g., left and right arms).
+    
+    Each head's features can attend to features from all other heads, allowing
+    them to coordinate their actions.
+    """
+    
+    def __init__(
+        self,
+        num_action_heads: int,  # Number of action heads (e.g., 2 for left/right arms)
+        num_attention_heads: int,  # Number of attention heads in the attention mechanism
+        num_layers: int,
+        hidden_dim: int,
+        head_dim: int,
+        dropout: float = 0.1,
+    ):
+        super().__init__()
+        self.num_action_heads = num_action_heads
+        self.num_layers = num_layers
+        self.hidden_dim = hidden_dim
+        
+        # Create multiple layers of cross-attention
+        self.layers = nn.ModuleList()
+        for _ in range(num_layers):
+            # Cross-attention layer: each head attends to all heads
+            cross_attn = Attention(
+                query_dim=hidden_dim,
+                heads=num_attention_heads,
+                dim_head=head_dim,
+                dropout=dropout,
+                bias=True,
+                cross_attention_dim=hidden_dim,  # Cross-attend to other heads
+                upcast_attention=False,
+                out_bias=True,
+            )
+            # Layer norms
+            norm1 = nn.LayerNorm(hidden_dim)
+            norm2 = nn.LayerNorm(hidden_dim)
+            # Feed-forward
+            ff = nn.Sequential(
+                nn.Linear(hidden_dim, hidden_dim * 2),
+                nn.GELU(),
+                nn.Dropout(dropout),
+                nn.Linear(hidden_dim * 2, hidden_dim),
+                nn.Dropout(dropout),
+            )
+            self.layers.append(nn.ModuleDict({
+                'cross_attn': cross_attn,
+                'norm1': norm1,
+                'norm2': norm2,
+                'ff': ff,
+            }))
+    
+    def forward(
+        self,
+        head_features: list[torch.Tensor],
+    ) -> list[torch.Tensor]:
+        """
+        Apply cross-attention between different action head features.
+        
+        Args:
+            head_features: List of tensors, each of shape [B, T, hidden_dim]
+                          representing features for each action head
+        
+        Returns:
+            List of updated features with cross-attention applied
+        """
+        num_heads = len(head_features)
+        assert num_heads == self.num_action_heads, (
+            f"Expected {self.num_action_heads} heads, got {num_heads}"
+        )
+        
+        # Process through cross-attention layers
+        for layer in self.layers:
+            # Concatenate all head features along sequence dimension for cross-attention
+            # Shape: [B, num_heads*T, hidden_dim]
+            all_heads_concat = torch.cat(head_features, dim=1)
+            
+            # For each head, apply cross-attention to attend to all heads
+            updated_features = []
+            for i, head_feat in enumerate(head_features):
+                # Query from current head, keys/values from all heads
+                normed_query = layer['norm1'](head_feat)
+                cross_attn_output = layer['cross_attn'](
+                    normed_query,
+                    encoder_hidden_states=all_heads_concat,  # Cross-attend to all heads
+                    attention_mask=None,
+                )
+                # Residual connection
+                updated_feat = head_feat + cross_attn_output
+                
+                # Feed-forward
+                updated_feat = updated_feat + layer['ff'](layer['norm2'](updated_feat))
+                updated_features.append(updated_feat)
+            
+            head_features = updated_features
+        
+        return head_features
 
 
 class Gr00tN1d6ActionHead(nn.Module):
@@ -55,12 +159,55 @@ class Gr00tN1d6ActionHead(nn.Module):
             hidden_size=self.input_embedding_dim,
             num_embodiments=config.max_num_embodiments,
         )
-        self.action_decoder = CategorySpecificMLP(
-            num_categories=config.max_num_embodiments,
-            input_dim=self.hidden_size,
-            hidden_dim=self.hidden_size,
-            output_dim=self.action_dim,
-        )
+        
+        # Initialize action decoder(s) - support multi-head or single head
+        self.use_multi_head = config.use_multi_head_action_decoder
+        if self.use_multi_head and config.action_head_dims is not None:
+            # Create multiple decoder heads for different action parts
+            self.action_head_dims = config.action_head_dims
+            assert sum(self.action_head_dims) == self.action_dim, (
+                f"Sum of action_head_dims {sum(self.action_head_dims)} must equal "
+                f"max_action_dim {self.action_dim}"
+            )
+            self.action_decoders = nn.ModuleList([
+                CategorySpecificMLP(
+                    num_categories=config.max_num_embodiments,
+                    input_dim=self.hidden_size,
+                    hidden_dim=self.hidden_size,
+                    output_dim=head_dim,
+                )
+                for head_dim in self.action_head_dims
+            ])
+            self.action_decoder = None  # Not used in multi-head mode
+            
+            # Initialize cross-attention between heads if enabled
+            self.use_cross_attention = config.use_cross_attention_between_heads
+            if self.use_cross_attention:
+                self.cross_attention = CrossAttentionBetweenHeads(
+                    num_action_heads=len(self.action_decoders),
+                    num_attention_heads=config.cross_attention_num_heads,
+                    num_layers=config.cross_attention_num_layers,
+                    hidden_dim=self.hidden_size,
+                    head_dim=config.cross_attention_head_dim,
+                    dropout=config.attn_dropout,
+                )
+                print(f"Using cross-attention between {len(self.action_decoders)} action heads for coordination")
+            else:
+                self.cross_attention = None
+            
+            print(f"Using multi-head action decoder with {len(self.action_decoders)} heads: {self.action_head_dims}")
+        else:
+            # Single decoder head (default)
+            self.action_decoder = CategorySpecificMLP(
+                num_categories=config.max_num_embodiments,
+                input_dim=self.hidden_size,
+                hidden_dim=self.hidden_size,
+                output_dim=self.action_dim,
+            )
+            self.action_decoders = None
+            self.action_head_dims = None
+            self.use_cross_attention = False
+            self.cross_attention = None
 
         self.vlln = (
             nn.LayerNorm(config.backbone_embedding_dim) if config.use_vlln else nn.Identity()
@@ -98,7 +245,13 @@ class Gr00tN1d6ActionHead(nn.Module):
         if not tune_projector:
             self.state_encoder.requires_grad_(False)
             self.action_encoder.requires_grad_(False)
-            self.action_decoder.requires_grad_(False)
+            if self.use_multi_head and self.action_decoders is not None:
+                for decoder in self.action_decoders:
+                    decoder.requires_grad_(False)
+            else:
+                self.action_decoder.requires_grad_(False)
+            if self.use_cross_attention and self.cross_attention is not None:
+                self.cross_attention.requires_grad_(False)
             if self.config.add_pos_embed:
                 self.position_embedding.requires_grad_(False)
             if self.state_dropout_prob > 0:
@@ -128,7 +281,13 @@ class Gr00tN1d6ActionHead(nn.Module):
             if not self.tune_projector:
                 self.state_encoder.eval()
                 self.action_encoder.eval()
-                self.action_decoder.eval()
+                if self.use_multi_head and self.action_decoders is not None:
+                    for decoder in self.action_decoders:
+                        decoder.eval()
+                else:
+                    self.action_decoder.eval()
+                if self.use_cross_attention and self.cross_attention is not None:
+                    self.cross_attention.eval()
                 if self.config.add_pos_embed:
                     self.position_embedding.eval()
             if not self.tune_diffusion_model:
@@ -239,7 +398,11 @@ class Gr00tN1d6ActionHead(nn.Module):
                 return_all_hidden_states=True,
             )
 
-        pred = self.action_decoder(model_output, embodiment_id)
+        # Decode action using single or multi-head decoder
+        if self.use_multi_head and self.action_decoders is not None:
+            pred = self._decode_action_multi_head(model_output, embodiment_id)
+        else:
+            pred = self.action_decoder(model_output, embodiment_id)
         pred_actions = pred[:, -actions.shape[1] :]
 
         # Slice out only the action portion of pred and target.
@@ -284,6 +447,48 @@ class Gr00tN1d6ActionHead(nn.Module):
         state_features = self.state_encoder(action_input.state, embodiment_id)
 
         return BatchFeature(data={"backbone_features": vl_embeds, "state_features": state_features})
+
+    def _decode_action_multi_head(
+        self, model_output: torch.Tensor, embodiment_id: torch.Tensor
+    ) -> torch.Tensor:
+        """
+        Decode action using multiple decoder heads and concatenate outputs.
+        Optionally applies cross-attention between heads for coordination.
+        
+        Args:
+            model_output: [B, T, hidden_size] output from DiT model
+            embodiment_id: [B] embodiment IDs
+            
+        Returns:
+            [B, T, action_dim] concatenated action predictions
+        """
+        if not self.use_multi_head or self.action_decoders is None:
+            raise ValueError("Multi-head decoder not initialized")
+        
+        # If cross-attention is enabled, apply it before decoding
+        if self.use_cross_attention and self.cross_attention is not None:
+            # Split model_output for each head (they all use the same input initially)
+            # Each head gets the same model_output as input
+            head_features = [model_output] * len(self.action_decoders)  # List of [B, T, hidden_size]
+            
+            # Apply cross-attention between heads
+            # This allows each head to attend to features from other heads
+            head_features = self.cross_attention(head_features)  # List of [B, T, hidden_size]
+            
+            # Now decode each head with its cross-attended features
+            head_outputs = []
+            for decoder, features in zip(self.action_decoders, head_features):
+                head_output = decoder(features, embodiment_id)  # [B, T, head_dim]
+                head_outputs.append(head_output)
+        else:
+            # Standard multi-head decoding without cross-attention
+            head_outputs = []
+            for decoder in self.action_decoders:
+                head_output = decoder(model_output, embodiment_id)  # [B, T, head_dim]
+                head_outputs.append(head_output)
+        
+        # Concatenate along the last dimension
+        return torch.cat(head_outputs, dim=-1)  # [B, T, action_dim]
 
     @torch.no_grad()
     def get_action_with_features(
@@ -349,7 +554,11 @@ class Gr00tN1d6ActionHead(nn.Module):
                     encoder_hidden_states=vl_embeds,
                     timestep=timesteps_tensor,
                 )
-            pred = self.action_decoder(model_output, embodiment_id)
+            # Decode action using single or multi-head decoder
+            if self.use_multi_head and self.action_decoders is not None:
+                pred = self._decode_action_multi_head(model_output, embodiment_id)
+            else:
+                pred = self.action_decoder(model_output, embodiment_id)
 
             pred_velocity = pred[:, -self.action_horizon :]
 

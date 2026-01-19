@@ -62,6 +62,14 @@ if __name__ == "__main__":
     config.model.random_rotation_angle = ft_config.random_rotation_angle
     config.model.color_jitter_params = ft_config.color_jitter_params
 
+    # enable multi-head decoder and cross-attention
+    config.model.use_multi_head_action_decoder = True
+    config.model.action_head_dims = [7, 7, 2]  # left_arm, right_arm, gripper
+    config.model.use_cross_attention_between_heads = True
+    config.model.cross_attention_num_heads = 8
+    config.model.cross_attention_head_dim = 64
+    config.model.cross_attention_num_layers = 1
+
     config.model.load_bf16 = False
     config.model.reproject_vision = False
     config.model.eagle_collator = True

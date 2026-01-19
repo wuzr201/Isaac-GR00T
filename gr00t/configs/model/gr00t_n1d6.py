@@ -101,6 +101,17 @@ class Gr00tN1d6Config(PretrainedConfig):
     # Multi-embodiment parameters
     max_num_embodiments: int = 32
 
+    # Multi-head action decoder parameters
+    use_multi_head_action_decoder: bool = False  # Whether to use separate decoder heads for different action parts
+    action_head_dims: list[int] | None = None  # List of output dimensions for each action head (e.g., [7, 7, 2] for left_arm, right_arm)
+    # If None and use_multi_head_action_decoder=True, will use single head with max_action_dim
+    
+    # Cross-attention between action heads for coordination
+    use_cross_attention_between_heads: bool = False  # Whether to enable cross-attention between different action heads
+    cross_attention_num_heads: int = 8  # Number of attention heads for cross-attention
+    cross_attention_head_dim: int = 64  # Dimension of each attention head
+    cross_attention_num_layers: int = 1  # Number of cross-attention layers
+
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         for key, value in kwargs.items():
