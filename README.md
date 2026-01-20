@@ -111,6 +111,23 @@ uv pip install -e .
 > Note: CUDA 12.4 is recommended and officially tested. However, CUDA 11.8 has also been verified to work.
 > In such cases, make sure to install a compatible version of `flash-attn` manually (e.g., `flash-attn==2.8.2` was confirmed working with CUDA 11.8).
 
+> Note: On Ubuntu 20.04, replace flash-attn with the specified version. Also, use uv run --no-sync python xxx instead of uv run python.
+```sh
+python -c "import flash_attn; print(f'Flash Attention {flash_attn.__version__} imported successfully')"
+
+# Traceback (most recent call last):
+#   File "<string>", line 1, in <module>
+#   File "xxx/Isaac-GR00T/.venv/lib/python3.10/site-packages/flash_attn/__init__.py", line 3, in <module>
+#     from flash_attn.flash_attn_interface import (
+#   File "xxx/Isaac-GR00T/.venv/lib/python3.10/site-packages/flash_attn/flash_attn_interface.py", line 15, in <module>
+#     import flash_attn_2_cuda as flash_attn_gpu
+# ImportError: /lib/x86_64-linux-gnu/libc.so.6: version `GLIBC_2.32' not found (required by xxx/Isaac-GR00T/.venv/lib/python3.10/site-packages/flash_attn_2_cuda.cpython-310-x86_64-linux-gnu.so)
+```
+
+```sh
+uv pip install https://github.com/Dao-AILab/flash-attention/releases/download/v2.7.4.post1/flash_attn-2.7.4.post1+cu12torch2.6cxx11abiTRUE-cp310-cp310-linux_x86_64.whl
+```
+
 For a containerized setup that avoids system-level dependency conflicts, see our [Docker Setup Guide](docker/README.md).
 
 For training and inference hardware recommendations (RTX PRO Servers, DGX, Jetson AGX Thor), see the [Hardware Recommendation Guide](getting_started/hardware_recommendation.md).
