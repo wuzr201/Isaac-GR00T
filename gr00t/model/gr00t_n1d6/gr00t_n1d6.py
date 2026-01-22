@@ -164,11 +164,19 @@ class Gr00tN1d6ActionHead(nn.Module):
         self.use_multi_head = config.use_multi_head_action_decoder
         if self.use_multi_head and config.action_head_dims is not None:
             # Create multiple decoder heads for different action parts
-            self.action_head_dims = config.action_head_dims
-            assert sum(self.action_head_dims) == self.action_dim, (
-                f"Sum of action_head_dims {sum(self.action_head_dims)} must equal "
-                f"max_action_dim {self.action_dim}"
-            )
+            self.action_head_dims = list(config.action_head_dims)
+            head_sum = sum(self.action_head_dims)
+            if head_sum < self.action_dim:
+                remainder = self.action_dim - head_sum
+                self.action_head_dims.append(remainder)
+                print(
+                    f"[Multi-head action decoder] action_head_dims sum ({head_sum}) < "
+                    f"max_action_dim ({self.action_dim}); appended dummy head of dim {remainder}."
+                )
+            elif head_sum > self.action_dim:
+                raise ValueError(
+                    f"Sum of action_head_dims {head_sum} must be <= max_action_dim {self.action_dim}"
+                )
             self.action_decoders = nn.ModuleList([
                 CategorySpecificMLP(
                     num_categories=config.max_num_embodiments,
@@ -179,6 +187,22 @@ class Gr00tN1d6ActionHead(nn.Module):
                 for head_dim in self.action_head_dims
             ])
             self.action_decoder = None  # Not used in multi-head mode
+
+            # Store action head names for semantic loss naming
+            if config.action_head_names is not None:
+                self.action_head_names = list(config.action_head_names)
+                # If a dummy head was added, append a default name for it
+                if len(self.action_head_names) < len(self.action_head_dims):
+                    self.action_head_names.extend([
+                        f"head_{i}" for i in range(len(self.action_head_names), len(self.action_head_dims))
+                    ])
+            else:
+                # If no names provided, use default numeric names
+                self.action_head_names = [f"head_{i}" for i in range(len(self.action_decoders))]
+
+            self._num_action_heads = len(self.action_decoders)
+            self.head_role_embedding = nn.Embedding(self._num_action_heads, self.hidden_size)
+            nn.init.normal_(self.head_role_embedding.weight, mean=0.0, std=0.02)
             
             # Initialize cross-attention between heads if enabled
             self.use_cross_attention = config.use_cross_attention_between_heads
@@ -410,13 +434,53 @@ class Gr00tN1d6ActionHead(nn.Module):
         action_loss = F.mse_loss(pred_actions, velocity, reduction="none") * action_mask
         loss = action_loss.sum() / (action_mask.sum() + 1e-6)
 
-        return {
+        # If using multi-head decoder, compute per-head losses and weighted sum
+        result = {
             "loss": loss,
             "action_loss": action_loss,
             "action_mask": action_mask,
             "backbone_features": vl_embeds,
             "state_features": state_features,
         }
+        
+        if self.use_multi_head and self.action_decoders is not None:
+            # Compute per-head losses
+            head_losses = []
+            head_weights = []
+            start_idx = 0
+            
+            for i, head_dim in enumerate(self.action_head_dims):
+                end_idx = start_idx + head_dim
+                
+                # Slice pred_actions, velocity, and action_mask for this head
+                pred_head = pred_actions[:, :, start_idx:end_idx]
+                velocity_head = velocity[:, :, start_idx:end_idx]
+                mask_head = action_mask[:, :, start_idx:end_idx]
+                
+                # Compute loss for this head
+                head_loss = F.mse_loss(pred_head, velocity_head, reduction="none") * mask_head
+                head_loss_sum = head_loss.sum() / (mask_head.sum() + 1e-6)
+                head_losses.append(head_loss_sum)
+                
+                # Weight by the number of valid masked dimensions for this head
+                # This gives more weight to heads with more valid action dimensions
+                head_weight = mask_head.sum().float() / (action_mask.sum().float() + 1e-6)
+                head_weights.append(head_weight)
+                
+                # Store individual head loss in result (as scalar value) using semantic name
+                head_name = self.action_head_names[i]
+                result[f"{head_name}_loss"] = head_loss_sum.item()
+                
+                start_idx = end_idx
+            
+            # Compute weighted sum of head losses
+            head_losses_tensor = torch.stack(head_losses)
+            head_weights_tensor = torch.stack(head_weights)
+            weighted_head_loss = (head_losses_tensor * head_weights_tensor).sum()
+            
+            result["loss"] = weighted_head_loss
+        
+        return result
 
     def _encode_features(
         self, backbone_output: BatchFeature, action_input: BatchFeature
@@ -467,9 +531,15 @@ class Gr00tN1d6ActionHead(nn.Module):
         
         # If cross-attention is enabled, apply it before decoding
         if self.use_cross_attention and self.cross_attention is not None:
-            # Split model_output for each head (they all use the same input initially)
-            # Each head gets the same model_output as input
-            head_features = [model_output] * len(self.action_decoders)  # List of [B, T, hidden_size]
+            # Create head-specific features first (role-conditioned),
+            # then allow heads to attend to each other.
+            num_heads = len(self.action_decoders)
+            role_ids = torch.arange(num_heads, device=model_output.device, dtype=torch.long)
+            role_embs = self.head_role_embedding(role_ids)  # [H, hidden]
+            head_features = [
+                model_output + role_embs[i].view(1, 1, -1).to(dtype=model_output.dtype)
+                for i in range(num_heads)
+            ]  # List of [B, T, hidden_size]
             
             # Apply cross-attention between heads
             # This allows each head to attend to features from other heads

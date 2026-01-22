@@ -75,6 +75,14 @@ class Gr00tN1d6Pipeline(ModelPipeline):
                 tune_vlln=self.config.model.tune_vlln,
                 state_dropout_prob=self.config.model.state_dropout_prob,
                 backbone_trainable_params_fp32=self.config.model.backbone_trainable_params_fp32,
+                # Multi-head action decoder + head coordination
+                use_multi_head_action_decoder=self.config.model.use_multi_head_action_decoder,
+                action_head_dims=self.config.model.action_head_dims,
+                action_head_names=self.config.model.action_head_names,
+                use_cross_attention_between_heads=self.config.model.use_cross_attention_between_heads,
+                cross_attention_num_heads=self.config.model.cross_attention_num_heads,
+                cross_attention_head_dim=self.config.model.cross_attention_head_dim,
+                cross_attention_num_layers=self.config.model.cross_attention_num_layers,
                 transformers_loading_kwargs=self.transformers_loading_kwargs,
                 output_loading_info=True,
                 **self.transformers_loading_kwargs,
@@ -96,6 +104,9 @@ class Gr00tN1d6Pipeline(ModelPipeline):
             model = self.model_class(
                 self.config.model, transformers_loading_kwargs=self.transformers_loading_kwargs
             )
+
+        from gr00t.utils.training_utils import init_weights_vit_timm, named_apply
+        named_apply(init_weights_vit_timm, model.action_head)
 
         print(colored(f"Model Config: {model.config}", "yellow"))
         if get_rank() == 0:

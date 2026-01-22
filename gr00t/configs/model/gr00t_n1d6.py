@@ -105,6 +105,7 @@ class Gr00tN1d6Config(PretrainedConfig):
     use_multi_head_action_decoder: bool = False  # Whether to use separate decoder heads for different action parts
     action_head_dims: list[int] | None = None  # List of output dimensions for each action head (e.g., [7, 7, 2] for left_arm, right_arm)
     # If None and use_multi_head_action_decoder=True, will use single head with max_action_dim
+    action_head_names: list[str] | None = None  # Optional semantic names aligned with action_head_dims order (e.g., ["left_arm", "right_arm", "gripper"])
     
     # Cross-attention between action heads for coordination
     use_cross_attention_between_heads: bool = False  # Whether to enable cross-attention between different action heads

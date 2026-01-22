@@ -303,6 +303,63 @@ class Gr00tTrainer(Trainer):
         self.loss = loss
 
         # --------------------------------------------------------------
+        # Log additional losses (e.g., per-head losses for multi-head decoders)
+        # --------------------------------------------------------------
+        if (
+            self.state.global_step % self.args.logging_steps == 0
+            and model.training
+        ):
+            additional_losses = {}
+            
+            # Extract additional losses from outputs (e.g., head_0_loss, weighted_head_loss, etc.)
+            # outputs is a BatchFeature or dict-like object
+            try:
+                # Try to get keys from outputs
+                if isinstance(outputs, dict):
+                    keys_to_check = list(outputs.keys())
+                elif hasattr(outputs, "keys"):
+                    keys_to_check = list(outputs.keys())
+                elif hasattr(outputs, "__dict__"):
+                    keys_to_check = list(outputs.__dict__.keys())
+                else:
+                    keys_to_check = []
+                
+                for key in keys_to_check:
+                    if key.endswith("_loss") and key != "loss":
+                        try:
+                            # Try dictionary-style access first
+                            if isinstance(outputs, dict) or hasattr(outputs, "__getitem__"):
+                                loss_value = outputs[key]
+                            # Try attribute access
+                            elif hasattr(outputs, key):
+                                loss_value = getattr(outputs, key)
+                            else:
+                                continue
+                            
+                            # If it's already a scalar, use it directly
+                            if isinstance(loss_value, (int, float)):
+                                additional_losses[key] = loss_value
+                            # If it's a tensor, convert to scalar
+                            elif isinstance(loss_value, torch.Tensor):
+                                if loss_value.numel() == 1:
+                                    additional_losses[key] = loss_value.item()
+                                else:
+                                    # If it's a multi-element tensor, take mean
+                                    loss_tensor = loss_value.detach()
+                                    loss_mean = self._nested_gather(loss_tensor).mean().item()
+                                    additional_losses[key] = loss_mean
+                        except (KeyError, AttributeError, TypeError):
+                            # Skip if key doesn't exist or can't be accessed
+                            continue
+            except Exception:
+                # If anything goes wrong, just skip logging additional losses
+                pass
+            
+            # Log additional losses to wandb
+            if additional_losses and self.args.local_rank in (-1, 0):
+                self.log(additional_losses)
+
+        # --------------------------------------------------------------
         # Accuracy calculation
         # --------------------------------------------------------------
         if (
